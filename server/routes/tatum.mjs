@@ -4,7 +4,12 @@ import { tatumFetch, tatumRpc, tatumApiBase, MissingApiKeyError } from '../tatum
 const router = Router()
 
 // Default fallback demo wallet for testing Solana queries
-const DEFAULT_WALLET = 'Vote111111111111111111111111111111111111111'
+let connectedWallet = {
+  address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJos3bWq',
+  type: 'Phantom', // 'Phantom' | 'Bitget' | 'Solflare' | 'Backpack' | 'Custom'
+  isConnected: true,
+  rentRecoveryDestination: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJos3bWq' // Configurable destination for 100% recovered rent
+}
 
 // In-memory state for bot, simulated positions, paper trading, and rent recovery
 let botConfig = {
@@ -171,8 +176,54 @@ router.get('/status', async (_req, res) => {
 })
 
 // Wallet Balances & Info (Live Solana Tatum RPC)
+router.get('/wallet', async (_req, res) => {
+  res.json(connectedWallet)
+})
+
+router.post('/wallet/connect', async (req, res) => {
+  const { address, type, rentRecoveryDestination } = req.body
+  if (address) {
+    connectedWallet.address = address
+  }
+  if (type) {
+    connectedWallet.type = type
+  }
+  if (rentRecoveryDestination) {
+    connectedWallet.rentRecoveryDestination = rentRecoveryDestination
+  } else if (address) {
+    connectedWallet.rentRecoveryDestination = address
+  }
+  connectedWallet.isConnected = true
+
+  executionLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    type: 'WALLET',
+    severity: 'info',
+    message: `Connected ${connectedWallet.type} wallet: ${connectedWallet.address.slice(0, 6)}...${connectedWallet.address.slice(-4)}. Rent recovery destination set to: ${connectedWallet.rentRecoveryDestination.slice(0, 6)}...`
+  })
+
+  res.json({ success: true, wallet: connectedWallet })
+})
+
+router.post('/wallet/rent-destination', (req, res) => {
+  const { destinationAddress } = req.body
+  if (!destinationAddress) {
+    return res.status(400).json({ error: 'destinationAddress is required' })
+  }
+  connectedWallet.rentRecoveryDestination = destinationAddress
+  executionLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    type: 'RENT',
+    severity: 'info',
+    message: `Updated rent recovery payout address to: ${destinationAddress}`
+  })
+  res.json({ success: true, rentRecoveryDestination: destinationAddress })
+})
+
 router.get('/wallet/:address', async (req, res) => {
-  const address = req.params.address || DEFAULT_WALLET
+  const address = req.params.address || connectedWallet.address
   try {
     // Call Solana RPC via Tatum
     const balanceRes = await tatumRpc('solana', {
@@ -719,7 +770,7 @@ router.post('/rent/claim', (req, res) => {
     timestamp: new Date().toISOString(),
     type: 'RENT',
     severity: 'success',
-    message: `Batch Rent Recovery executed: Successfully closed ${targetAccounts.length} token accounts. Reclaimed +${reclaimedTotal.toFixed(6)} SOL back to trading wallet.`
+    message: `Batch Rent Recovery executed: Successfully closed ${targetAccounts.length} token accounts. Reclaimed +${reclaimedTotal.toFixed(6)} SOL transferred directly to destination wallet: ${connectedWallet.rentRecoveryDestination}.`
   })
 
   res.json({
@@ -727,7 +778,7 @@ router.post('/rent/claim', (req, res) => {
     reclaimedAccountsCount: targetAccounts.length,
     reclaimedSol: reclaimedTotal,
     transactionSignature: txSig,
-    destinationWallet: DEFAULT_WALLET
+    destinationWallet: connectedWallet.rentRecoveryDestination
   })
 })
 
